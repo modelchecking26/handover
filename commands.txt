@@ -1,0 +1,8 @@
+read_model -i handover.smv
+flatten_hierarchy
+encode_variables
+build_model
+
+print_reachable_states
+check_property
+show_property
