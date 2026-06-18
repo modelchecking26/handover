@@ -1,0 +1,160 @@
+MODULE Timer(start_flag, timeout)
+VAR
+  counter : 1..timeout;
+  expired : boolean;
+ASSIGN
+  init(counter) := 1;
+  init(expired) := FALSE;
+
+  next(counter) :=
+  case
+    !next(start_flag) : 1;
+    counter < timeout : counter + 1;
+    TRUE : counter;
+  esac;
+  next(expired) := next(counter) = timeout;
+
+
+MODULE Pilot(PilotID, active, phase, HA_SUCCEED)
+DEFINE
+  TIMEOUT := 5;
+
+VAR
+  state : {CO_WP, CO_LO, RF, HR, HA, AL, PA, ID, END};
+  set_msg : {M_NONE, M_WP, M_LO, M_HA, M_LA, M_PA, EXC};
+  RF_flag : boolean;
+  RF_timer : Timer(RF_flag, TIMEOUT);
+  HA_flag : boolean;
+  HA_timer : Timer(HA_flag, TIMEOUT);
+
+ASSIGN
+  init(state) := PilotID = active ? CO_WP : ID;
+  init(set_msg) := M_NONE;
+  init(RF_flag) := FALSE;
+  init(HA_flag) := FALSE;
+
+  next(RF_flag) := state = RF;
+  next(HA_flag) := state = HA;
+  next(state) :=
+  case
+    next(phase) != PILOT : state;
+    state = CO_LO : {CO_LO, CO_WP, HA, AL, PA, RF};
+    state = CO_WP : {CO_LO, CO_WP, AL, PA, RF};
+    state = RF & next(RF_timer.expired) : {END};
+    state = RF : {CO_LO, CO_WP, RF};
+    state = HA & HA_SUCCEED : {ID};
+    state = HA & next(HA_timer.expired) : {CO_WP};
+    state = HA : {HA};
+    state = ID : {ID, HR};
+    state = HR & HA_SUCCEED : {CO_WP};
+    state = HR : {HR, ID};
+    state = AL : {END};
+    state = PA : {END};
+    state = END : {END};
+  esac;
+  next(set_msg) :=
+  case
+    PilotID != next(active) : M_NONE;
+    next(state) = CO_LO : M_LO;
+    next(state) = CO_WP : M_WP;
+    next(state) = RF : M_NONE;
+    next(state) = HA : M_HA;
+    next(state) = AL : M_LA;
+    next(state) = PA : M_PA;
+    TRUE : EXC;
+  esac;
+
+
+MODULE Uav(phase, msg)
+DEFINE
+  TIMEOUT := 5;
+
+VAR
+  RTB_flag : boolean;
+  state : {ST, WP, LO, HA, LA, PA, END, ERR};
+  conn_timer : Timer(msg = M_NONE, TIMEOUT);
+
+ASSIGN
+  init(RTB_flag) := FALSE;
+  init(state) := ST;
+
+  next(RTB_flag) := next(conn_timer.expired);
+  next(state) :=
+  case
+    state = ERR : ERR;
+    state = END : END;
+    next(RTB_flag) & state != LA : LA;
+    state = ST : WP;
+    state = LA : END;
+    state = PA : END;
+    next(msg) = M_NONE : state;
+    state = WP & next(msg) = M_WP : WP;
+    state = WP & next(msg) = M_LO : LO;
+    state = WP & next(msg) = M_LA : LA;
+    state = WP & next(msg) = M_PA : PA;
+    state = WP : ERR;
+    state = LO & next(msg) = M_LO : LO;
+    state = LO & next(msg) = M_WP : WP;
+    state = LO & next(msg) = M_HA : HA;
+    state = LO & next(msg) = M_LA : LA;
+    state = LO & next(msg) = M_PA : PA;
+    state = LO : ERR;
+    state = HA & next(msg) = M_WP : WP;
+    state = HA & next(msg) = M_HA : HA;
+    state = HA : ERR;
+  esac;
+
+
+MODULE main
+DEFINE
+  HA_SUCCEED := phase = UVA & uav.state = HA &
+    (pilot1.state = HA & pilot2.state = HR |
+     pilot1.state = HR & pilot2.state = HA);
+  FINISHED := uav.state = END & (pilot1.state = END | pilot2.state = END);
+VAR
+  phase : {PILOT, UVA};
+  active : {P1, P2};
+  msg : {M_NONE, M_WP, M_LO, M_HA, M_LA, M_PA, EXC};
+  pilot1 : Pilot(P1, active, phase, HA_SUCCEED);
+  pilot2 : Pilot(P2, active, phase, HA_SUCCEED);
+  uav : Uav(phase, msg);
+
+ASSIGN
+  init(phase) := UVA;
+  init(active) := P1;
+  init(msg) := M_NONE;
+
+  next(phase) :=
+  case
+    phase = PILOT : UVA;
+    phase = UVA : PILOT;
+  esac;
+  next(active) :=
+  case
+    HA_SUCCEED : active = P1 ? P2 : P1;
+    TRUE: active;
+  esac;
+  next(msg) :=
+  case
+    active = P1 : next(pilot1.set_msg);
+    active = P2 : next(pilot2.set_msg);
+  esac;
+
+
+LTLSPEC G (uav.state = END -> X (pilot1.state = END xor pilot2.state = END))
+LTLSPEC G ((pilot1.state = END xor pilot2.state = END) -> uav.state = END)
+LTLSPEC G ((pilot1.state = END -> active = P1) & (pilot2.state = END -> active = P2))
+
+CTLSPEC AG (msg = EXC -> FINISHED)
+CTLSPEC AG EF FINISHED
+CTLSPEC EG !FINISHED
+LTLSPEC F FINISHED
+
+CTLSPEC EF active = P2
+CTLSPEC E [active = P1 U active = P2]
+CTLSPEC EF (active = P2 & E [active = P2 U active = P1])
+
+CTLSPEC EG EF HA_SUCCEED
+LTLSPEC F G !HA_SUCCEED
+
+CTLSPEC AG uav.state != ERR
