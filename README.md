@@ -1,4 +1,4 @@
 # Usage:
 ```
-NuSMV -source cmd.txt
+NuSMV -source commands.txt
 ```
